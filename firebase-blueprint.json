@@ -1,0 +1,75 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "Digital product catalog item such as an app, book, script or website",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string" },
+        "categoryLabel": { "type": "string" },
+        "format": { "type": "string" },
+        "fileSize": { "type": "string" },
+        "shortDescription": { "type": "string" },
+        "fullDescription": { "type": "string" },
+        "originalPrice": { "type": "number" },
+        "promoPrice": { "type": "number" },
+        "badge": { "type": "string" },
+        "image": { "type": "string" },
+        "secretDownloadUrl": { "type": "string" },
+        "secretInstructions": { "type": "string" },
+        "demoUrl": { "type": "string" },
+        "active": { "type": "boolean" },
+        "downloadsCount": { "type": "number" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "name", "category", "promoPrice", "secretDownloadUrl"]
+    },
+    "DownloadKey": {
+      "title": "DownloadKey",
+      "description": "Unique purchase key for unlocking secret product download",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "key": { "type": "string" },
+        "productId": { "type": "string" },
+        "productName": { "type": "string" },
+        "customerNote": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "used", "revoked"] },
+        "createdAt": { "type": "string" },
+        "usedAt": { "type": "string" },
+        "downloadCount": { "type": "number" },
+        "maxUses": { "type": "number" }
+      },
+      "required": ["id", "key", "productId", "status"]
+    },
+    "AppSettings": {
+      "title": "AppSettings",
+      "description": "Global application configuration for WhatsApp and payments",
+      "type": "object",
+      "properties": {
+        "whatsappNumber": { "type": "string" },
+        "whatsappFormatted": { "type": "string" },
+        "pixKey": { "type": "string" },
+        "sellerName": { "type": "string" },
+        "siteNotice": { "type": "string" },
+        "adNotice": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "/products/{productId}": {
+      "schema": "Product",
+      "description": "Catalog of digital products"
+    },
+    "/download_keys/{keyId}": {
+      "schema": "DownloadKey",
+      "description": "Generated unique download keys for buyers"
+    },
+    "/settings/app": {
+      "schema": "AppSettings",
+      "description": "Global configuration document"
+    }
+  }
+}

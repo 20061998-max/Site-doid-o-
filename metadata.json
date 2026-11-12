@@ -1,0 +1,6 @@
+{
+  "name": "Doidão Downloads",
+  "description": "Vitrine exclusiva de livros digitais, aplicativos mobile, sites, sistemas prontos e scripts com liberação e download seguro via WhatsApp.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

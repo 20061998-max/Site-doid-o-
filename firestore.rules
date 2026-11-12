@@ -1,0 +1,23 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Produtos do catálogo
+    match /products/{productId} {
+      allow read: if true;
+      allow write: if true;
+    }
+    
+    // Chaves de download para desbloqueio
+    match /download_keys/{keyId} {
+      allow read: if true;
+      allow write: if true;
+    }
+    
+    // Configurações do app e WhatsApp
+    match /settings/{document=**} {
+      allow read: if true;
+      allow write: if true;
+    }
+  }
+}
