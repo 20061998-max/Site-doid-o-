@@ -144,15 +144,21 @@ export const ProductDetailsModal: React.FC<ProductDetailsModalProps> = ({
               <span>Já paguei / Tenho Chave</span>
             </button>
 
-            <a
-              href={whatsAppBuyUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex-1 sm:flex-none py-2.5 px-5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs sm:text-sm rounded-xl transition-all shadow-md shadow-emerald-950/40 flex items-center justify-center gap-2"
-            >
-              <MessageCircle className="w-4 h-4 fill-white text-emerald-600" />
-              <span>Comprar no WhatsApp</span>
-            </a>
+            {settings.whatsappNumber.replace(/\D/g, '') ? (
+              <a
+                href={whatsAppBuyUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex-1 sm:flex-none py-2.5 px-5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs sm:text-sm rounded-xl transition-all shadow-md shadow-emerald-950/40 flex items-center justify-center gap-2"
+              >
+                <MessageCircle className="w-4 h-4 fill-white text-emerald-600" />
+                <span>Comprar no WhatsApp</span>
+              </a>
+            ) : (
+              <span className="flex-1 sm:flex-none py-2.5 px-4 bg-slate-800 text-slate-400 font-semibold text-xs rounded-xl border border-slate-700 text-center">
+                WhatsApp não configurado
+              </span>
+            )}
           </div>
         </div>
       </div>

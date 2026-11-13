@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   X,
   Lock,
@@ -12,50 +12,38 @@ import {
   Check,
   MessageCircle,
   Upload,
-  HardDrive,
-  FileCode,
-  DollarSign,
   ShieldAlert,
   ShieldCheck,
-  RefreshCw,
   FolderOpen,
   Settings,
-  ExternalLink,
   Search,
   Cloud,
   CheckCircle2,
+  Loader2,
+  Save,
 } from 'lucide-react';
 import { Product, DownloadKey, AppSettings, ProductCategory } from '../types';
 import {
   ADMIN_CREDENTIALS,
   setAdminLoggedIn,
-  generateRandomKey,
-  createDownloadKey,
-  saveStoredProducts,
-  saveStoredKeys,
-  saveAppSettings,
-  INITIAL_PRODUCTS,
+  compressImageFile,
   buildWhatsAppKeyDeliveryUrl,
 } from '../utils/storage';
 import {
   saveProductToFirestore,
   deleteProductFromFirestore,
+  createDownloadKeyInFirestore,
   saveKeyToFirestore,
   deleteKeyFromFirestore,
   saveSettingsToFirestore,
-  syncInitialDataToFirestore,
 } from '../services/firebase';
-import { ProductThumbnail } from './ProductThumbnail';
 
 interface AdminPanelProps {
   isOpen: boolean;
   onClose: () => void;
   products: Product[];
-  onUpdateProducts: (products: Product[]) => void;
   keys: DownloadKey[];
-  onUpdateKeys: (keys: DownloadKey[]) => void;
   settings: AppSettings;
-  onUpdateSettings: (settings: AppSettings) => void;
   isAdmin: boolean;
   setIsAdmin: (isAdmin: boolean) => void;
 }
@@ -64,11 +52,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   isOpen,
   onClose,
   products,
-  onUpdateProducts,
   keys,
-  onUpdateKeys,
   settings,
-  onUpdateSettings,
   isAdmin,
   setIsAdmin,
 }) => {
@@ -86,27 +71,45 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [isCreatingProduct, setIsCreatingProduct] = useState(false);
   const [productSearch, setProductSearch] = useState('');
   const [imagePreview, setImagePreview] = useState<string>('');
+  const [isSavingProduct, setIsSavingProduct] = useState(false);
+  const [productError, setProductError] = useState<string | null>(null);
 
   // Key Generator states
   const [selectedProductId, setSelectedProductId] = useState<string>(products[0]?.id || '');
   const [customerNote, setCustomerNote] = useState('');
-  const [customerPhone, setCustomerPhone] = useState('');
   const [newlyCreatedKey, setNewlyCreatedKey] = useState<DownloadKey | null>(null);
+  const [isGeneratingKey, setIsGeneratingKey] = useState(false);
   const [copiedKey, setCopiedKey] = useState(false);
-  const [isSyncingCloud, setIsSyncingCloud] = useState(false);
-  const [cloudSyncMsg, setCloudSyncMsg] = useState<string | null>(null);
+
+  // Settings draft states (persisted directly to Firestore)
+  const [draftSettings, setDraftSettings] = useState<AppSettings>(settings);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [settingsSavedMsg, setSettingsSavedMsg] = useState<string | null>(null);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+
+  // Keep selectedProductId synced when products arrive from Firestore
+  useEffect(() => {
+    if (products.length > 0 && !products.some((p) => p.id === selectedProductId)) {
+      setSelectedProductId(products[0].id);
+    }
+  }, [products, selectedProductId]);
+
+  // Keep draftSettings synced with Firestore settings
+  useEffect(() => {
+    setDraftSettings(settings);
+  }, [settings]);
 
   // Form data for creating/editing product
   const [formData, setFormData] = useState<Partial<Product>>({
     name: '',
     category: 'apps',
     categoryLabel: 'Aplicativo Mobile',
-    format: 'ZIP (Código-Fonte)',
-    fileSize: '50 MB',
+    format: '',
+    fileSize: '',
     shortDescription: '',
     fullDescription: '',
-    originalPrice: 100,
-    promoPrice: 20,
+    originalPrice: 0,
+    promoPrice: 0,
     badge: 'Pronto para entrega',
     image: '',
     secretDownloadUrl: '',
@@ -140,22 +143,30 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setSenhaInput('');
   };
 
-  // Image Upload Handler (reads directly as Base64, NO URL needed!)
-  const handleImageFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Image Upload Handler (compresses in-browser so it fits comfortably inside Firestore < 1MB)
+  const handleImageFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      // Validate file size (< 6MB for smooth localStorage)
-      if (file.size > 6 * 1024 * 1024) {
-        alert('A imagem é muito grande. Escolha uma imagem de até 6MB.');
-        return;
+    if (!file) return;
+
+    setProductError(null);
+    if (file.size > 10 * 1024 * 1024) {
+      setProductError('A imagem selecionada excede 10MB. Escolha uma imagem menor.');
+      return;
+    }
+
+    try {
+      const compressedDataUrl = await compressImageFile(file, 900, 0.78);
+      if (compressedDataUrl.length > 900 * 1024) {
+        // Retry with stronger compression if still large
+        const smallerDataUrl = await compressImageFile(file, 640, 0.65);
+        setImagePreview(smallerDataUrl);
+        setFormData((prev) => ({ ...prev, image: smallerDataUrl }));
+      } else {
+        setImagePreview(compressedDataUrl);
+        setFormData((prev) => ({ ...prev, image: compressedDataUrl }));
       }
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const base64String = reader.result as string;
-        setImagePreview(base64String);
-        setFormData((prev) => ({ ...prev, image: base64String }));
-      };
-      reader.readAsDataURL(file);
+    } catch {
+      setProductError('Não foi possível processar a imagem. Tente outro arquivo PNG ou JPG.');
     }
   };
 
@@ -163,20 +174,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const startCreateProduct = () => {
     setEditingProduct(null);
     setImagePreview('');
+    setProductError(null);
     setFormData({
       name: '',
       category: 'apps',
       categoryLabel: 'Aplicativo Mobile',
-      format: 'ZIP (Código-Fonte Completo)',
-      fileSize: '45 MB',
+      format: '',
+      fileSize: '',
       shortDescription: '',
       fullDescription: '',
-      originalPrice: 150,
-      promoPrice: 25,
+      originalPrice: 0,
+      promoPrice: 0,
       badge: 'Pronto para entrega',
       image: '',
-      secretDownloadUrl: 'https://mega.nz/file/... ou Google Drive',
-      secretInstructions: 'Descompacte o arquivo e siga o tutorial dentro da pasta.',
+      secretDownloadUrl: '',
+      secretInstructions: '',
       demoUrl: '',
       active: true,
     });
@@ -187,143 +199,124 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const startEditProduct = (prod: Product) => {
     setEditingProduct(prod);
     setImagePreview(prod.image || '');
-    setFormData({
-      ...prod,
-    });
+    setProductError(null);
+    setFormData({ ...prod });
     setIsCreatingProduct(true);
   };
 
-  // Save Product (Create or Edit)
+  // Save Product directly to Firestore
   const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
+    setProductError(null);
 
     if (!formData.name?.trim()) {
-      alert('Por favor, informe o nome do produto.');
+      setProductError('Por favor, informe o nome do produto.');
       return;
     }
     if (!formData.secretDownloadUrl?.trim()) {
-      alert('Informe o link oculto de download (Mega, Google Drive, etc.).');
+      setProductError('Informe o link oculto de download (Mega, Google Drive, etc.).');
       return;
     }
 
-    let updatedProducts: Product[];
-    let productToSave: Product;
+    const productToSave: Product = editingProduct
+      ? ({
+          ...editingProduct,
+          ...formData,
+          categoryLabel: getCategoryLabel(formData.category as ProductCategory),
+        } as Product)
+      : {
+          id: 'prod-' + Date.now(),
+          name: formData.name.trim(),
+          category: (formData.category as Product['category']) || 'apps',
+          categoryLabel: getCategoryLabel(formData.category as ProductCategory),
+          format: formData.format?.trim() || 'ZIP',
+          fileSize: formData.fileSize?.trim() || 'N/A',
+          shortDescription: formData.shortDescription?.trim() || '',
+          fullDescription: formData.fullDescription?.trim() || '',
+          originalPrice: Number(formData.originalPrice) || 0,
+          promoPrice: Number(formData.promoPrice) || 0,
+          badge: formData.badge?.trim() || 'Pronto para entrega',
+          image: formData.image || '',
+          secretDownloadUrl: formData.secretDownloadUrl.trim(),
+          secretInstructions: formData.secretInstructions?.trim() || '',
+          demoUrl: formData.demoUrl?.trim() || '',
+          active: formData.active ?? true,
+          downloadsCount: 0,
+          createdAt: new Date().toISOString(),
+        };
 
-    if (editingProduct) {
-      // Update existing
-      productToSave = {
-        ...editingProduct,
-        ...formData,
-        categoryLabel: getCategoryLabel(formData.category as ProductCategory),
-      } as Product;
-      updatedProducts = products.map((p) => (p.id === editingProduct.id ? productToSave : p));
-    } else {
-      // Create new
-      productToSave = {
-        id: 'prod-' + Date.now(),
-        name: formData.name || 'Novo Produto',
-        category: (formData.category as any) || 'apps',
-        categoryLabel: getCategoryLabel(formData.category as ProductCategory),
-        format: formData.format || 'ZIP',
-        fileSize: formData.fileSize || '50 MB',
-        shortDescription: formData.shortDescription || '',
-        fullDescription: formData.fullDescription || '',
-        originalPrice: Number(formData.originalPrice) || 50,
-        promoPrice: Number(formData.promoPrice) || 10,
-        badge: formData.badge || 'Pronto para entrega',
-        image: formData.image || '',
-        secretDownloadUrl: formData.secretDownloadUrl || '',
-        secretInstructions: formData.secretInstructions || '',
-        demoUrl: formData.demoUrl || '',
-        active: formData.active ?? true,
-        downloadsCount: 0,
-        createdAt: new Date().toISOString(),
-      };
-      updatedProducts = [productToSave, ...products];
-    }
-
-    onUpdateProducts(updatedProducts);
-    saveStoredProducts(updatedProducts);
-
-    // Sync to Firestore
+    setIsSavingProduct(true);
     try {
       await saveProductToFirestore(productToSave);
+      setIsCreatingProduct(false);
+      setEditingProduct(null);
     } catch (err) {
-      console.warn('Saved locally, Firestore sync pending:', err);
+      console.error(err);
+      setProductError(
+        'Erro ao salvar produto no banco de dados Firebase. Verifique as regras do Firestore ou se a imagem é muito grande.'
+      );
+    } finally {
+      setIsSavingProduct(false);
     }
-
-    setIsCreatingProduct(false);
-    setEditingProduct(null);
   };
 
   const handleDeleteProduct = async (id: string) => {
-    if (confirm('Tem certeza que deseja excluir este produto do catálogo?')) {
-      const updated = products.filter((p) => p.id !== id);
-      onUpdateProducts(updated);
-      saveStoredProducts(updated);
-      try {
-        await deleteProductFromFirestore(id);
-      } catch (err) {
-        console.warn('Deleted locally, Firestore sync pending:', err);
-      }
+    if (!confirm('Tem certeza que deseja excluir este produto permanentemente do banco de dados?')) {
+      return;
+    }
+    try {
+      await deleteProductFromFirestore(id);
+    } catch (err) {
+      console.error(err);
+      alert('Erro ao excluir produto no Firebase. Verifique sua conexão.');
     }
   };
 
-  // Generate Download Key
+  // Generate Download Key directly in Firestore
   const handleGenerateKey = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedProductId) {
-      alert('Selecione um produto para emitir a chave.');
+      alert('Cadastre e selecione um produto antes de emitir uma chave.');
       return;
     }
 
     const targetProduct = products.find((p) => p.id === selectedProductId);
     if (!targetProduct) return;
 
-    const newKey = createDownloadKey(
-      targetProduct.id,
-      targetProduct.name,
-      customerNote || (customerPhone ? `Cliente WhatsApp ${customerPhone}` : 'Venda Pix WhatsApp'),
-      3
-    );
-
-    const updatedKeys = [newKey, ...keys.filter((k) => k.id !== newKey.id)];
-    onUpdateKeys(updatedKeys);
-    setNewlyCreatedKey(newKey);
-    setCustomerNote('');
-
-    // Sync to Firestore
+    setIsGeneratingKey(true);
     try {
-      await saveKeyToFirestore(newKey);
+      const newKey = await createDownloadKeyInFirestore(
+        targetProduct.id,
+        targetProduct.name,
+        customerNote.trim() || 'Venda WhatsApp',
+        3
+      );
+      setNewlyCreatedKey(newKey);
+      setCustomerNote('');
     } catch (err) {
-      console.warn('Saved locally, Firestore sync pending:', err);
+      console.error(err);
+      alert('Erro ao gerar chave no Firebase. Verifique sua conexão e permissões do Firestore.');
+    } finally {
+      setIsGeneratingKey(false);
     }
   };
 
-  const handleRevokeKey = async (keyId: string) => {
-    const updated = keys.map((k) => (k.id === keyId ? { ...k, status: 'revoked' as const } : k));
-    onUpdateKeys(updated);
-    saveStoredKeys(updated);
-    const keyToUpdate = updated.find((k) => k.id === keyId);
-    if (keyToUpdate) {
-      try {
-        await saveKeyToFirestore(keyToUpdate);
-      } catch (err) {
-        console.warn('Updated locally, Firestore sync pending:', err);
-      }
+  const handleRevokeKey = async (key: DownloadKey) => {
+    try {
+      await saveKeyToFirestore({ ...key, status: 'revoked' });
+    } catch (err) {
+      console.error(err);
+      alert('Erro ao revogar chave no Firebase.');
     }
   };
 
   const handleDeleteKey = async (keyId: string) => {
-    if (confirm('Deseja excluir esta chave permanentemente?')) {
-      const updated = keys.filter((k) => k.id !== keyId);
-      onUpdateKeys(updated);
-      saveStoredKeys(updated);
-      try {
-        await deleteKeyFromFirestore(keyId);
-      } catch (err) {
-        console.warn('Deleted locally, Firestore sync pending:', err);
-      }
+    if (!confirm('Deseja excluir esta chave permanentemente do banco de dados?')) return;
+    try {
+      await deleteKeyFromFirestore(keyId);
+    } catch (err) {
+      console.error(err);
+      alert('Erro ao excluir chave no Firebase.');
     }
   };
 
@@ -335,12 +328,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
-  // Reset to default seed
-  const handleResetCatalog = () => {
-    if (confirm('Deseja restaurar a vitrine com os produtos originais de exemplo?')) {
-      onUpdateProducts(INITIAL_PRODUCTS);
-      saveStoredProducts(INITIAL_PRODUCTS);
-      alert('Catálogo restaurado com sucesso!');
+  const handleSaveSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingSettings(true);
+    setSettingsSavedMsg(null);
+    setSettingsError(null);
+
+    try {
+      const cleaned: AppSettings = {
+        ...draftSettings,
+        whatsappNumber: draftSettings.whatsappNumber.replace(/\D/g, ''),
+      };
+      await saveSettingsToFirestore(cleaned);
+      setSettingsSavedMsg('Configurações salvas no banco de dados do site com sucesso!');
+    } catch (err) {
+      console.error(err);
+      setSettingsError(
+        'Erro ao salvar configurações no Firebase. Verifique se as regras do Firestore estão publicadas.'
+      );
+    } finally {
+      setIsSavingSettings(false);
     }
   };
 
@@ -375,7 +382,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               {isAdmin ? (
                 <p className="text-[11px] text-emerald-400 flex items-center gap-1">
                   <ShieldCheck className="w-3 h-3" />
-                  <span>Sessão Autenticada (Admin Master)</span>
+                  <span>Sessão Autenticada · Armazenamento em Nuvem (Firebase)</span>
                 </p>
               ) : (
                 <p className="text-[11px] text-slate-400">
@@ -416,7 +423,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   type="text"
                   value={loginInput}
                   onChange={(e) => setLoginInput(e.target.value)}
-                  placeholder="Digite seu login (ex: 12480670961)"
+                  placeholder="Digite seu login"
                   className="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-sm text-white placeholder-slate-500 font-mono focus:outline-none focus:border-cyan-400"
                   required
                   autoFocus
@@ -520,7 +527,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               {/* TAB 1: PRODUCTS MANAGER */}
               {activeTab === 'products' && (
                 <div className="space-y-6">
-                  {/* If in Create / Edit mode */}
                   {isCreatingProduct ? (
                     <div className="bg-[#0B101D] border border-slate-700/80 rounded-xl p-5 space-y-5 animate-in fade-in duration-200">
                       <div className="flex items-center justify-between border-b border-slate-800 pb-3">
@@ -549,7 +555,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               type="text"
                               value={formData.name || ''}
                               onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                              placeholder="Ex: Minha Obra - App Gestão de Obras"
+                              placeholder="Ex: Nome do aplicativo, livro ou site"
                               className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-cyan-400"
                               required
                             />
@@ -564,7 +570,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               onChange={(e) =>
                                 setFormData({
                                   ...formData,
-                                  category: e.target.value as any,
+                                  category: e.target.value as Product['category'],
                                   categoryLabel: getCategoryLabel(e.target.value as ProductCategory),
                                 })
                               }
@@ -591,7 +597,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               onChange={(e) =>
                                 setFormData({ ...formData, promoPrice: parseFloat(e.target.value) || 0 })
                               }
-                              placeholder="10.00"
+                              placeholder="0.00"
                               className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white font-mono focus:outline-none focus:border-cyan-400"
                               required
                             />
@@ -608,7 +614,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               onChange={(e) =>
                                 setFormData({ ...formData, originalPrice: parseFloat(e.target.value) || 0 })
                               }
-                              placeholder="800.00"
+                              placeholder="0.00"
                               className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white font-mono focus:outline-none focus:border-cyan-400"
                             />
                           </div>
@@ -623,7 +629,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               type="text"
                               value={formData.format || ''}
                               onChange={(e) => setFormData({ ...formData, format: e.target.value })}
-                              placeholder="Ex: PDF + EPUB, ZIP (React/Node), APK Android"
+                              placeholder="Ex: PDF + EPUB, ZIP, APK Android"
                               className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white font-mono focus:outline-none focus:border-cyan-400"
                               required
                             />
@@ -637,21 +643,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               type="text"
                               value={formData.fileSize || ''}
                               onChange={(e) => setFormData({ ...formData, fileSize: e.target.value })}
-                              placeholder="Ex: 45 MB, 120 MB"
+                              placeholder="Ex: 45 MB"
                               className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white font-mono focus:outline-none focus:border-cyan-400"
                               required
                             />
                           </div>
                         </div>
 
-                        {/* Image Upload in Native Image Format (Base64 file reader, NO external URL!) */}
+                        {/* Image Upload in Native Image Format */}
                         <div className="p-4 bg-slate-900/90 border border-slate-800 rounded-xl space-y-3">
                           <div>
                             <label className="block text-xs font-bold text-cyan-300 mb-1">
                               Foto do Produto (Arquivo direto do Computador / Celular)
                             </label>
                             <p className="text-[11px] text-slate-400">
-                              Envie o arquivo no próprio formato de imagem (PNG, JPG, WebP). Sem precisar de URL!
+                              Envie no próprio formato de imagem (PNG, JPG, WebP). A foto é otimizada e salva direto no banco de dados do site.
                             </p>
                           </div>
 
@@ -689,7 +695,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               </div>
                             ) : (
                               <span className="text-xs text-slate-500 italic">
-                                Nenhuma imagem personalizada enviada (usará o mockup visual automático).
+                                Nenhuma foto enviada (usará o ícone da categoria).
                               </span>
                             )}
                           </div>
@@ -698,10 +704,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         {/* Secret Hidden Download URL */}
                         <div className="p-4 bg-emerald-950/20 border border-emerald-500/30 rounded-xl space-y-2">
                           <label className="block text-xs font-bold text-emerald-400">
-                            🔒 Link Oculto do Download (Mega, Google Drive, Mediafire, etc.) *
+                            Link Oculto do Download (Mega, Google Drive, Mediafire, etc.) *
                           </label>
                           <p className="text-[11px] text-slate-300">
-                            Este link fica 100% oculto dos visitantes na vitrine. Ele só será liberado e visível para o cliente que inserir a chave de download gerada por você após pagar.
+                            Este link fica 100% oculto dos visitantes na vitrine e só é liberado para quem tiver uma chave válida.
                           </p>
                           <input
                             type="text"
@@ -709,7 +715,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             onChange={(e) =>
                               setFormData({ ...formData, secretDownloadUrl: e.target.value })
                             }
-                            placeholder="https://mega.nz/file/... ou https://drive.google.com/..."
+                            placeholder="https://drive.google.com/... ou https://mega.nz/..."
                             className="w-full px-3.5 py-2.5 bg-slate-950 border border-emerald-500/40 rounded-lg text-sm text-white font-mono focus:outline-none focus:border-emerald-400"
                             required
                           />
@@ -725,14 +731,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             onChange={(e) =>
                               setFormData({ ...formData, shortDescription: e.target.value })
                             }
-                            placeholder="Resumo em 2 frases para atrair o cliente..."
+                            placeholder="Resumo curto para exibir no card do produto..."
                             className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-cyan-400"
                           />
                         </div>
 
                         <div>
                           <label className="block text-xs font-semibold text-slate-300 mb-1">
-                            Descrição Completa & Instruções do Produto
+                            Descrição Completa
                           </label>
                           <textarea
                             rows={4}
@@ -740,7 +746,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             onChange={(e) =>
                               setFormData({ ...formData, fullDescription: e.target.value })
                             }
-                            placeholder="Descreva os recursos, requisitos, conteúdo dos livros ou código..."
+                            placeholder="Descreva os recursos, requisitos e detalhes completos do produto..."
                             className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-cyan-400"
                           />
                         </div>
@@ -755,7 +761,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             onChange={(e) =>
                               setFormData({ ...formData, secretInstructions: e.target.value })
                             }
-                            placeholder="Ex: Descompacte o arquivo ZIP e abra o PDF com a senha padrão..."
+                            placeholder="Instruções de instalação ou acesso após o desbloqueio..."
                             className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-cyan-400"
                           />
                         </div>
@@ -768,7 +774,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             type="text"
                             value={formData.demoUrl || ''}
                             onChange={(e) => setFormData({ ...formData, demoUrl: e.target.value })}
-                            placeholder="https://exemplo-demo.com"
+                            placeholder="https://..."
                             className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white font-mono focus:outline-none focus:border-cyan-400"
                           />
                         </div>
@@ -786,6 +792,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           </label>
                         </div>
 
+                        {productError && (
+                          <div className="p-3 bg-rose-950/60 border border-rose-800/60 rounded-xl text-xs text-rose-300 flex items-center gap-2">
+                            <ShieldAlert className="w-4 h-4 shrink-0 text-rose-400" />
+                            <span>{productError}</span>
+                          </div>
+                        )}
+
                         <div className="pt-4 flex items-center justify-end gap-3 border-t border-slate-800">
                           <button
                             type="button"
@@ -799,9 +812,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           </button>
                           <button
                             type="submit"
-                            className="px-6 py-2.5 text-xs font-bold text-slate-950 bg-cyan-400 hover:bg-cyan-300 rounded-xl shadow-md shadow-cyan-950/40"
+                            disabled={isSavingProduct}
+                            className="px-6 py-2.5 text-xs font-bold text-slate-950 bg-cyan-400 hover:bg-cyan-300 disabled:opacity-50 rounded-xl shadow-md shadow-cyan-950/40 flex items-center gap-2"
                           >
-                            {editingProduct ? 'Salvar Alterações' : 'Publicar Produto na Vitrine'}
+                            {isSavingProduct && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                            <span>
+                              {isSavingProduct
+                                ? 'Salvando na Nuvem...'
+                                : editingProduct
+                                ? 'Salvar Alterações'
+                                : 'Publicar Produto na Vitrine'}
+                            </span>
                           </button>
                         </div>
                       </form>
@@ -830,101 +851,112 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         </button>
                       </div>
 
-                      {/* Products Table */}
-                      <div className="bg-[#0B101D] border border-slate-800 rounded-xl overflow-hidden">
-                        <div className="overflow-x-auto">
-                          <table className="w-full text-left text-xs text-slate-300">
-                            <thead className="bg-slate-950/80 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">
-                              <tr>
-                                <th className="p-3">Produto</th>
-                                <th className="p-3">Categoria</th>
-                                <th className="p-3">Formato / Tam.</th>
-                                <th className="p-3">Preço Pix</th>
-                                <th className="p-3">Status</th>
-                                <th className="p-3 text-right">Ações</th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y divide-slate-800/80">
-                              {products
-                                .filter((p) =>
-                                  p.name.toLowerCase().includes(productSearch.toLowerCase())
-                                )
-                                .map((prod) => (
-                                  <tr key={prod.id} className="hover:bg-slate-900/50">
-                                    <td className="p-3">
-                                      <div className="flex items-center gap-2.5">
-                                        <div className="w-9 h-9 rounded bg-slate-800 overflow-hidden shrink-0">
-                                          {prod.image ? (
-                                            <img
-                                              src={prod.image}
-                                              alt={prod.name}
-                                              className="w-full h-full object-cover"
-                                            />
-                                          ) : (
-                                            <div className="w-full h-full flex items-center justify-center text-[10px] text-cyan-400 font-bold">
-                                              VIP
-                                            </div>
-                                          )}
-                                        </div>
-                                        <div>
-                                          <p className="font-bold text-white line-clamp-1">{prod.name}</p>
-                                          <span className="text-[10px] text-slate-400 font-mono">
-                                            #{prod.id.slice(0, 8)}
-                                          </span>
-                                        </div>
-                                      </div>
-                                    </td>
-                                    <td className="p-3">
-                                      <span className="bg-slate-800 px-2 py-0.5 rounded text-[10px] font-medium text-slate-300">
-                                        {prod.categoryLabel}
-                                      </span>
-                                    </td>
-                                    <td className="p-3 font-mono text-[11px] text-slate-300">
-                                      {prod.fileSize}
-                                    </td>
-                                    <td className="p-3 font-mono font-bold text-emerald-400">
-                                      R$ {prod.promoPrice.toFixed(2).replace('.', ',')}
-                                    </td>
-                                    <td className="p-3">
-                                      <span
-                                        className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full ${
-                                          prod.active
-                                            ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-800/40'
-                                            : 'bg-rose-950/60 text-rose-400 border border-rose-800/40'
-                                        }`}
-                                      >
-                                        <span
-                                          className={`w-1.5 h-1.5 rounded-full ${
-                                            prod.active ? 'bg-emerald-400' : 'bg-rose-400'
-                                          }`}
-                                        />
-                                        <span>{prod.active ? 'Ativo' : 'Pausado'}</span>
-                                      </span>
-                                    </td>
-                                    <td className="p-3 text-right">
-                                      <div className="flex items-center justify-end gap-1.5">
-                                        <button
-                                          onClick={() => startEditProduct(prod)}
-                                          className="p-1.5 text-slate-400 hover:text-cyan-400 hover:bg-slate-800 rounded transition-colors"
-                                          title="Editar Produto"
-                                        >
-                                          <Edit2 className="w-3.5 h-3.5" />
-                                        </button>
-                                        <button
-                                          onClick={() => handleDeleteProduct(prod.id)}
-                                          className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded transition-colors"
-                                          title="Excluir Produto"
-                                        >
-                                          <Trash2 className="w-3.5 h-3.5" />
-                                        </button>
-                                      </div>
-                                    </td>
-                                  </tr>
-                                ))}
-                            </tbody>
-                          </table>
+                      {products.length === 0 ? (
+                        <div className="p-8 text-center bg-[#0B101D] border border-slate-800 rounded-xl space-y-3">
+                          <FolderOpen className="w-10 h-10 text-slate-500 mx-auto" />
+                          <p className="text-sm font-bold text-white">
+                            Nenhum produto cadastrado no banco de dados
+                          </p>
+                          <p className="text-xs text-slate-400">
+                            Clique em &quot;Adicionar Novo Produto&quot; acima para publicar seu primeiro item diretamente no Firebase.
+                          </p>
                         </div>
-                      </div>
+                      ) : (
+                        <div className="bg-[#0B101D] border border-slate-800 rounded-xl overflow-hidden">
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-left text-xs text-slate-300">
+                              <thead className="bg-slate-950/80 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">
+                                <tr>
+                                  <th className="p-3">Produto</th>
+                                  <th className="p-3">Categoria</th>
+                                  <th className="p-3">Formato / Tam.</th>
+                                  <th className="p-3">Preço Pix</th>
+                                  <th className="p-3">Status</th>
+                                  <th className="p-3 text-right">Ações</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-800/80">
+                                {products
+                                  .filter((p) =>
+                                    p.name.toLowerCase().includes(productSearch.toLowerCase())
+                                  )
+                                  .map((prod) => (
+                                    <tr key={prod.id} className="hover:bg-slate-900/50">
+                                      <td className="p-3">
+                                        <div className="flex items-center gap-2.5">
+                                          <div className="w-9 h-9 rounded bg-slate-800 overflow-hidden shrink-0">
+                                            {prod.image ? (
+                                              <img
+                                                src={prod.image}
+                                                alt={prod.name}
+                                                className="w-full h-full object-cover"
+                                              />
+                                            ) : (
+                                              <div className="w-full h-full flex items-center justify-center text-[10px] text-cyan-400 font-bold">
+                                                IMG
+                                              </div>
+                                            )}
+                                          </div>
+                                          <div>
+                                            <p className="font-bold text-white line-clamp-1">{prod.name}</p>
+                                            <span className="text-[10px] text-slate-400 font-mono">
+                                              #{prod.id.slice(0, 8)}
+                                            </span>
+                                          </div>
+                                        </div>
+                                      </td>
+                                      <td className="p-3">
+                                        <span className="bg-slate-800 px-2 py-0.5 rounded text-[10px] font-medium text-slate-300">
+                                          {prod.categoryLabel}
+                                        </span>
+                                      </td>
+                                      <td className="p-3 font-mono text-[11px] text-slate-300">
+                                        {prod.fileSize}
+                                      </td>
+                                      <td className="p-3 font-mono font-bold text-emerald-400">
+                                        R$ {prod.promoPrice.toFixed(2).replace('.', ',')}
+                                      </td>
+                                      <td className="p-3">
+                                        <span
+                                          className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                                            prod.active
+                                              ? 'bg-emerald-950/60 text-emerald-400 border border-emerald-800/40'
+                                              : 'bg-rose-950/60 text-rose-400 border border-rose-800/40'
+                                          }`}
+                                        >
+                                          <span
+                                            className={`w-1.5 h-1.5 rounded-full ${
+                                              prod.active ? 'bg-emerald-400' : 'bg-rose-400'
+                                            }`}
+                                          />
+                                          <span>{prod.active ? 'Ativo' : 'Pausado'}</span>
+                                        </span>
+                                      </td>
+                                      <td className="p-3 text-right">
+                                        <div className="flex items-center justify-end gap-1.5">
+                                          <button
+                                            onClick={() => startEditProduct(prod)}
+                                            className="p-1.5 text-slate-400 hover:text-cyan-400 hover:bg-slate-800 rounded transition-colors"
+                                            title="Editar Produto"
+                                          >
+                                            <Edit2 className="w-3.5 h-3.5" />
+                                          </button>
+                                          <button
+                                            onClick={() => handleDeleteProduct(prod.id)}
+                                            className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded transition-colors"
+                                            title="Excluir Produto"
+                                          >
+                                            <Trash2 className="w-3.5 h-3.5" />
+                                          </button>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -949,53 +981,64 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       </div>
                     </div>
 
-                    <form onSubmit={handleGenerateKey} className="space-y-4 pt-2">
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <div>
-                          <label className="block text-xs font-semibold text-slate-300 mb-1">
-                            Selecione o Produto Vendido *
-                          </label>
-                          <select
-                            value={selectedProductId}
-                            onChange={(e) => setSelectedProductId(e.target.value)}
-                            className="w-full px-3 py-2.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-amber-400"
-                            required
+                    {products.length === 0 ? (
+                      <p className="text-xs text-amber-300 bg-amber-950/30 border border-amber-500/30 rounded-lg p-3">
+                        Cadastre pelo menos um produto na aba &quot;Produtos&quot; para poder gerar chaves de download.
+                      </p>
+                    ) : (
+                      <form onSubmit={handleGenerateKey} className="space-y-4 pt-2">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          <div>
+                            <label className="block text-xs font-semibold text-slate-300 mb-1">
+                              Selecione o Produto Vendido *
+                            </label>
+                            <select
+                              value={selectedProductId}
+                              onChange={(e) => setSelectedProductId(e.target.value)}
+                              className="w-full px-3 py-2.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-amber-400"
+                              required
+                            >
+                              {products.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                  {p.name} - R$ {p.promoPrice.toFixed(2)}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="block text-xs font-semibold text-slate-300 mb-1">
+                              Nome do Cliente ou Nota da Venda
+                            </label>
+                            <input
+                              type="text"
+                              value={customerNote}
+                              onChange={(e) => setCustomerNote(e.target.value)}
+                              placeholder="Ex: Nome do cliente ou comprovante"
+                              className="w-full px-3 py-2.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-amber-400"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-between pt-1">
+                          <span className="text-[11px] text-slate-400">
+                            Chave aleatória salva diretamente no Firebase com limite de 3 downloads seguros.
+                          </span>
+                          <button
+                            type="submit"
+                            disabled={isGeneratingKey}
+                            className="px-5 py-2.5 bg-amber-400 hover:bg-amber-300 disabled:opacity-50 text-slate-950 font-bold text-xs rounded-xl transition-all shadow-md shadow-amber-950/40 flex items-center gap-1.5"
                           >
-                            {products.map((p) => (
-                              <option key={p.id} value={p.id}>
-                                {p.name} - R$ {p.promoPrice.toFixed(2)}
-                              </option>
-                            ))}
-                          </select>
+                            {isGeneratingKey ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <Key className="w-3.5 h-3.5" />
+                            )}
+                            <span>{isGeneratingKey ? 'Gerando...' : 'Gerar Chave Aleatória'}</span>
+                          </button>
                         </div>
-
-                        <div>
-                          <label className="block text-xs font-semibold text-slate-300 mb-1">
-                            Nome do Cliente ou Nota da Venda
-                          </label>
-                          <input
-                            type="text"
-                            value={customerNote}
-                            onChange={(e) => setCustomerNote(e.target.value)}
-                            placeholder="Ex: João - Pix R$ 30 recebido"
-                            className="w-full px-3 py-2.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-amber-400"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="flex items-center justify-between pt-1">
-                        <span className="text-[11px] text-slate-400">
-                          Chave aleatória gerada com formato exclusivo e limite de 3 downloads seguros.
-                        </span>
-                        <button
-                          type="submit"
-                          className="px-5 py-2.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs rounded-xl transition-all shadow-md shadow-amber-950/40 flex items-center gap-1.5"
-                        >
-                          <Key className="w-3.5 h-3.5" />
-                          <span>Gerar Chave Aleatória</span>
-                        </button>
-                      </div>
-                    </form>
+                      </form>
+                    )}
 
                     {/* Show Newly Generated Key Card */}
                     {newlyCreatedKey && (
@@ -1028,12 +1071,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               )}
                             </button>
 
-                            {/* Direct WhatsApp delivery button */}
                             {(() => {
                               const targetProd = products.find(
                                 (p) => p.id === newlyCreatedKey.productId
                               );
-                              if (!targetProd) return null;
+                              const cleanPhone = settings.whatsappNumber.replace(/\D/g, '');
+                              if (!targetProd || !cleanPhone) return null;
                               const waUrl = buildWhatsAppKeyDeliveryUrl(
                                 settings.whatsappNumber,
                                 newlyCreatedKey.customerNote,
@@ -1064,97 +1107,115 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       Histórico de Chaves Emitidas ({keys.length})
                     </h4>
                     <div className="bg-[#0B101D] border border-slate-800 rounded-xl overflow-hidden">
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-left text-xs text-slate-300">
-                          <thead className="bg-slate-950/80 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">
-                            <tr>
-                              <th className="p-3">Chave</th>
-                              <th className="p-3">Produto</th>
-                              <th className="p-3">Nota / Cliente</th>
-                              <th className="p-3">Downloads</th>
-                              <th className="p-3">Status</th>
-                              <th className="p-3 text-right">Ações</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-800/80">
-                            {keys.map((k) => (
-                              <tr key={k.id} className="hover:bg-slate-900/50">
-                                <td className="p-3 font-mono font-bold text-amber-300">
-                                  {k.key}
-                                </td>
-                                <td className="p-3 max-w-[180px] truncate text-white">
-                                  {k.productName}
-                                </td>
-                                <td className="p-3 text-slate-400">
-                                  {k.customerNote || '—'}
-                                </td>
-                                <td className="p-3 font-mono text-[11px]">
-                                  {k.downloadCount} / {k.maxUses}
-                                </td>
-                                <td className="p-3">
-                                  <span
-                                    className={`inline-block px-2 py-0.5 rounded text-[10px] font-semibold ${
-                                      k.status === 'active'
-                                        ? 'bg-emerald-950 text-emerald-300 border border-emerald-800/50'
-                                        : k.status === 'used'
-                                        ? 'bg-slate-800 text-slate-400'
-                                        : 'bg-rose-950 text-rose-300 border border-rose-800/50'
-                                    }`}
-                                  >
-                                    {k.status === 'active'
-                                      ? 'Ativa'
-                                      : k.status === 'used'
-                                      ? 'Esgotada'
-                                      : 'Revogada'}
-                                  </span>
-                                </td>
-                                <td className="p-3 text-right">
-                                  <div className="flex items-center justify-end gap-1.5">
-                                    <button
-                                      onClick={() => {
-                                        navigator.clipboard.writeText(k.key);
-                                        alert(`Chave ${k.key} copiada!`);
-                                      }}
-                                      className="p-1.5 text-slate-400 hover:text-white rounded"
-                                      title="Copiar Chave"
-                                    >
-                                      <Copy className="w-3.5 h-3.5" />
-                                    </button>
-                                    {k.status === 'active' && (
-                                      <button
-                                        onClick={() => handleRevokeKey(k.id)}
-                                        className="text-[10px] text-amber-400 hover:underline px-1"
-                                        title="Revogar Chave"
-                                      >
-                                        Revogar
-                                      </button>
-                                    )}
-                                    <button
-                                      onClick={() => handleDeleteKey(k.id)}
-                                      className="p-1.5 text-slate-400 hover:text-rose-400 rounded"
-                                      title="Excluir Chave"
-                                    >
-                                      <Trash2 className="w-3.5 h-3.5" />
-                                    </button>
-                                  </div>
-                                </td>
+                      {keys.length === 0 ? (
+                        <div className="p-6 text-center text-xs text-slate-400">
+                          Nenhuma chave gerada ainda no banco de dados.
+                        </div>
+                      ) : (
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left text-xs text-slate-300">
+                            <thead className="bg-slate-950/80 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">
+                              <tr>
+                                <th className="p-3">Chave</th>
+                                <th className="p-3">Produto</th>
+                                <th className="p-3">Nota / Cliente</th>
+                                <th className="p-3">Downloads</th>
+                                <th className="p-3">Status</th>
+                                <th className="p-3 text-right">Ações</th>
                               </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
+                            </thead>
+                            <tbody className="divide-y divide-slate-800/80">
+                              {keys.map((k) => (
+                                <tr key={k.id} className="hover:bg-slate-900/50">
+                                  <td className="p-3 font-mono font-bold text-amber-300">
+                                    {k.key}
+                                  </td>
+                                  <td className="p-3 max-w-[180px] truncate text-white">
+                                    {k.productName}
+                                  </td>
+                                  <td className="p-3 text-slate-400">
+                                    {k.customerNote || '—'}
+                                  </td>
+                                  <td className="p-3 font-mono text-[11px]">
+                                    {k.downloadCount} / {k.maxUses}
+                                  </td>
+                                  <td className="p-3">
+                                    <span
+                                      className={`inline-block px-2 py-0.5 rounded text-[10px] font-semibold ${
+                                        k.status === 'active'
+                                          ? 'bg-emerald-950 text-emerald-300 border border-emerald-800/50'
+                                          : k.status === 'used'
+                                          ? 'bg-slate-800 text-slate-400'
+                                          : 'bg-rose-950 text-rose-300 border border-rose-800/50'
+                                      }`}
+                                    >
+                                      {k.status === 'active'
+                                        ? 'Ativa'
+                                        : k.status === 'used'
+                                        ? 'Esgotada'
+                                        : 'Revogada'}
+                                    </span>
+                                  </td>
+                                  <td className="p-3 text-right">
+                                    <div className="flex items-center justify-end gap-1.5">
+                                      <button
+                                        onClick={() => {
+                                          navigator.clipboard.writeText(k.key);
+                                        }}
+                                        className="p-1.5 text-slate-400 hover:text-white rounded"
+                                        title="Copiar Chave"
+                                      >
+                                        <Copy className="w-3.5 h-3.5" />
+                                      </button>
+                                      {k.status === 'active' && (
+                                        <button
+                                          onClick={() => handleRevokeKey(k)}
+                                          className="text-[10px] text-amber-400 hover:underline px-1"
+                                          title="Revogar Chave"
+                                        >
+                                          Revogar
+                                        </button>
+                                      )}
+                                      <button
+                                        onClick={() => handleDeleteKey(k.id)}
+                                        className="p-1.5 text-slate-400 hover:text-rose-400 rounded"
+                                        title="Excluir Chave"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
               )}
 
-              {/* TAB 3: SETTINGS & WHATSAPP CONFIG */}
+              {/* TAB 3: SETTINGS & WHATSAPP CONFIG (SAVED TO FIRESTORE) */}
               {activeTab === 'settings' && (
                 <div className="space-y-6 max-w-2xl">
-                  <div className="p-5 bg-[#0B101D] border border-slate-800 rounded-xl space-y-4">
-                    <h3 className="text-sm font-bold text-white font-['Outfit']">
-                      Configurações de Vendas & WhatsApp
-                    </h3>
+                  <form
+                    onSubmit={handleSaveSettings}
+                    className="p-5 bg-[#0B101D] border border-slate-800 rounded-xl space-y-4"
+                  >
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                      <div>
+                        <h3 className="text-sm font-bold text-white font-['Outfit']">
+                          Configurações de Vendas & WhatsApp
+                        </h3>
+                        <p className="text-[11px] text-slate-400">
+                          Todas as configurações salvas aqui ficam armazenadas no banco de dados oficial do site (Firestore).
+                        </p>
+                      </div>
+                      <span className="text-[10px] bg-cyan-950/80 text-cyan-300 px-2 py-0.5 rounded border border-cyan-800/40 font-mono">
+                        Nuvem
+                      </span>
+                    </div>
 
                     <div>
                       <label className="block text-xs font-semibold text-slate-300 mb-1">
@@ -1162,20 +1223,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       </label>
                       <input
                         type="text"
-                        value={settings.whatsappNumber}
-                        onChange={(e) => {
-                          const updated = {
-                            ...settings,
+                        value={draftSettings.whatsappNumber}
+                        onChange={(e) =>
+                          setDraftSettings({
+                            ...draftSettings,
                             whatsappNumber: e.target.value.replace(/\D/g, ''),
-                          };
-                          onUpdateSettings(updated);
-                          saveAppSettings(updated);
-                        }}
-                        placeholder="Ex: 5548998091948"
-                        className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white font-mono"
+                          })
+                        }
+                        placeholder="Ex: 5511999999999"
+                        className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white font-mono focus:outline-none focus:border-cyan-400"
                       />
                       <p className="mt-1 text-[11px] text-slate-400">
-                        Os botões de "Comprar Agora no WhatsApp" e "Anuncie Aqui" usarão este número.
+                        Os botões de &quot;Comprar Agora no WhatsApp&quot; e &quot;Anuncie Aqui&quot; usarão este número.
                       </p>
                     </div>
 
@@ -1185,14 +1244,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       </label>
                       <input
                         type="text"
-                        value={settings.whatsappFormatted}
-                        onChange={(e) => {
-                          const updated = { ...settings, whatsappFormatted: e.target.value };
-                          onUpdateSettings(updated);
-                          saveAppSettings(updated);
-                        }}
-                        placeholder="Ex: (48) 99809-1948"
-                        className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white font-mono"
+                        value={draftSettings.whatsappFormatted}
+                        onChange={(e) =>
+                          setDraftSettings({ ...draftSettings, whatsappFormatted: e.target.value })
+                        }
+                        placeholder="Ex: (11) 99999-9999"
+                        className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white font-mono focus:outline-none focus:border-cyan-400"
                       />
                     </div>
 
@@ -1202,104 +1259,94 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       </label>
                       <input
                         type="text"
-                        value={settings.pixKey}
-                        onChange={(e) => {
-                          const updated = { ...settings, pixKey: e.target.value };
-                          onUpdateSettings(updated);
-                          saveAppSettings(updated);
-                        }}
-                        placeholder="12480670961"
-                        className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white font-mono"
+                        value={draftSettings.pixKey}
+                        onChange={(e) =>
+                          setDraftSettings({ ...draftSettings, pixKey: e.target.value })
+                        }
+                        placeholder="Digite sua chave Pix"
+                        className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white font-mono focus:outline-none focus:border-cyan-400"
                       />
                     </div>
 
                     <div>
                       <label className="block text-xs font-semibold text-slate-300 mb-1">
-                        Texto do Banner "Anuncie Aqui"
+                        Aviso do Topo do Site
+                      </label>
+                      <input
+                        type="text"
+                        value={draftSettings.siteNotice}
+                        onChange={(e) =>
+                          setDraftSettings({ ...draftSettings, siteNotice: e.target.value })
+                        }
+                        className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-cyan-400"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-300 mb-1">
+                        Texto do Banner &quot;Anuncie Aqui&quot;
                       </label>
                       <textarea
                         rows={2}
-                        value={settings.adNotice}
-                        onChange={(e) => {
-                          const updated = { ...settings, adNotice: e.target.value };
-                          onUpdateSettings(updated);
-                          saveAppSettings(updated);
-                        }}
-                        className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white"
+                        value={draftSettings.adNotice}
+                        onChange={(e) =>
+                          setDraftSettings({ ...draftSettings, adNotice: e.target.value })
+                        }
+                        className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-cyan-400"
                       />
                     </div>
-                  </div>
 
-                  {/* Firebase Real Cloud Status Card */}
-                  <div className="p-5 bg-gradient-to-r from-[#0C1527] to-[#0A1322] border border-cyan-500/30 rounded-xl space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 rounded-lg bg-cyan-950 border border-cyan-500/40 flex items-center justify-center">
-                          <Cloud className="w-4 h-4 text-cyan-400" />
-                        </div>
-                        <div>
-                          <h4 className="text-xs font-bold text-white uppercase tracking-wider">
-                            Banco de Dados Firebase Firestore
-                          </h4>
-                          <span className="text-[11px] text-emerald-400 font-mono font-medium flex items-center gap-1">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                            <span>Conectado: site-doida</span>
-                          </span>
-                        </div>
-                      </div>
-                      <span className="text-[10px] bg-cyan-950/80 text-cyan-300 px-2 py-0.5 rounded border border-cyan-800/40 font-mono">
-                        Produção
-                      </span>
-                    </div>
-
-                    <p className="text-xs text-slate-300 leading-relaxed">
-                      Seus produtos, vendas e chaves de download estão vinculados ao seu projeto real do Firebase (<strong>site-doida</strong>). Todos os dados persistirão na nuvem oficial.
-                    </p>
-
-                    {cloudSyncMsg && (
+                    {settingsSavedMsg && (
                       <div className="p-2.5 bg-emerald-950/60 border border-emerald-500/40 rounded-lg text-xs text-emerald-300 flex items-center gap-2">
                         <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                        <span>{cloudSyncMsg}</span>
+                        <span>{settingsSavedMsg}</span>
+                      </div>
+                    )}
+
+                    {settingsError && (
+                      <div className="p-2.5 bg-rose-950/60 border border-rose-500/40 rounded-lg text-xs text-rose-300 flex items-center gap-2">
+                        <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0" />
+                        <span>{settingsError}</span>
                       </div>
                     )}
 
                     <button
-                      type="button"
-                      disabled={isSyncingCloud}
-                      onClick={async () => {
-                        setIsSyncingCloud(true);
-                        setCloudSyncMsg(null);
-                        try {
-                          await syncInitialDataToFirestore();
-                          setCloudSyncMsg('Todos os produtos e chaves foram sincronizados no Firebase com sucesso!');
-                        } catch (e) {
-                          setCloudSyncMsg('Catálogo enviado! Verifique o console do Firestore no Firebase.');
-                        } finally {
-                          setIsSyncingCloud(false);
-                        }
-                      }}
+                      type="submit"
+                      disabled={isSavingSettings}
                       className="w-full py-2.5 px-4 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 font-bold text-xs rounded-xl transition-all shadow-md flex items-center justify-center gap-2"
                     >
-                      <RefreshCw className={`w-3.5 h-3.5 ${isSyncingCloud ? 'animate-spin' : ''}`} />
-                      <span>{isSyncingCloud ? 'Enviando para a Nuvem...' : 'Sincronizar Catálogo Completo no Firestore'}</span>
+                      {isSavingSettings ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Save className="w-3.5 h-3.5" />
+                      )}
+                      <span>
+                        {isSavingSettings
+                          ? 'Salvando no Banco de Dados...'
+                          : 'Salvar Configurações no Banco de Dados'}
+                      </span>
                     </button>
-                  </div>
+                  </form>
 
-                  {/* Reset Catalog Button */}
-                  <div className="p-4 bg-slate-900/50 border border-slate-800 rounded-xl flex items-center justify-between">
-                    <div>
-                      <h4 className="text-xs font-bold text-white">Restaurar Vitrine Original</h4>
-                      <p className="text-[11px] text-slate-400">
-                        Restaura os produtos e itens de exemplo originais.
-                      </p>
+                  {/* Firebase Real Cloud Status Card */}
+                  <div className="p-5 bg-gradient-to-r from-[#0C1527] to-[#0A1322] border border-cyan-500/30 rounded-xl space-y-2">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-lg bg-cyan-950 border border-cyan-500/40 flex items-center justify-center">
+                        <Cloud className="w-4 h-4 text-cyan-400" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                          Banco de Dados Firebase Firestore
+                        </h4>
+                        <span className="text-[11px] text-emerald-400 font-mono font-medium flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                          <span>Conectado: site-doida</span>
+                        </span>
+                      </div>
                     </div>
-                    <button
-                      onClick={handleResetCatalog}
-                      className="px-3 py-2 text-xs font-semibold text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors flex items-center gap-1.5"
-                    >
-                      <RefreshCw className="w-3.5 h-3.5" />
-                      <span>Restaurar Padrão</span>
-                    </button>
+                    <p className="text-xs text-slate-300 leading-relaxed">
+                      O site está livre de dados locais ou exemplos fictícios. Tudo o que você cadastrar aqui é gravado exclusivamente no seu banco de dados em nuvem e carregado em qualquer aparelho.
+                    </p>
                   </div>
                 </div>
               )}

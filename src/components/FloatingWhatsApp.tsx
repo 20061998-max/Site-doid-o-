@@ -8,7 +8,11 @@ interface FloatingWhatsAppProps {
 
 export const FloatingWhatsApp: React.FC<FloatingWhatsAppProps> = ({ settings }) => {
   const [showTooltip, setShowTooltip] = useState(true);
-  const whatsAppDirectUrl = `https://wa.me/${settings.whatsappNumber.replace(/\D/g, '')}?text=${encodeURIComponent(
+  const cleanPhone = settings.whatsappNumber.replace(/\D/g, '');
+
+  if (!cleanPhone) return null;
+
+  const whatsAppDirectUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(
     'Olá! Estou navegando no Doidão Downloads e gostaria de tirar uma dúvida sobre os produtos.'
   )}`;
 
@@ -37,7 +41,9 @@ export const FloatingWhatsApp: React.FC<FloatingWhatsAppProps> = ({ settings }) 
       >
         <MessageCircle className="w-5 h-5 fill-white text-emerald-600" />
         <span className="hidden xs:inline">WhatsApp</span>
-        <span className="font-mono text-emerald-100">{settings.whatsappFormatted}</span>
+        <span className="font-mono text-emerald-100">
+          {settings.whatsappFormatted || settings.whatsappNumber}
+        </span>
       </a>
     </div>
   );

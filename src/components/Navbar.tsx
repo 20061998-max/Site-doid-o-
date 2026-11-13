@@ -19,6 +19,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onLogoutAdmin,
   onOpenUnlockModal,
 }) => {
+  const cleanPhone = settings.whatsappNumber.replace(/\D/g, '');
   const adUrl = buildWhatsAppAdUrl(settings.whatsappNumber);
 
   return (
@@ -28,20 +29,32 @@ export const Navbar: React.FC<NavbarProps> = ({
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-cyan-400">
             <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
-            <span className="font-medium tracking-tight">Compra 100% Segura com Autorização Direta via WhatsApp</span>
+            <span className="font-medium tracking-tight">
+              {settings.siteNotice || 'Compra 100% Segura com Autorização Direta via WhatsApp'}
+            </span>
           </div>
-          <div className="flex items-center gap-2 text-slate-400">
-            <span className="inline-block w-2 h-2 rounded-full bg-emerald-400" />
-            <span className="font-medium">WhatsApp Oficial:</span>
-            <a
-              href={`https://wa.me/${settings.whatsappNumber.replace(/\D/g, '')}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-emerald-400 font-bold hover:underline"
+          {cleanPhone ? (
+            <div className="flex items-center gap-2 text-slate-400">
+              <span className="inline-block w-2 h-2 rounded-full bg-emerald-400" />
+              <span className="font-medium">WhatsApp Oficial:</span>
+              <a
+                href={`https://wa.me/${cleanPhone}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-emerald-400 font-bold hover:underline"
+              >
+                {settings.whatsappFormatted || settings.whatsappNumber}
+              </a>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={onOpenAdmin}
+              className="text-[11px] text-amber-400 hover:underline font-medium"
             >
-              {settings.whatsappFormatted}
-            </a>
-          </div>
+              Configure seu WhatsApp na Administração
+            </button>
+          )}
         </div>
       </div>
 
@@ -74,16 +87,28 @@ export const Navbar: React.FC<NavbarProps> = ({
         {/* Action Controls */}
         <div className="flex items-center gap-2 sm:gap-3">
           {/* Anunciar button */}
-          <a
-            href={adUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-emerald-300 bg-emerald-950/40 hover:bg-emerald-900/50 border border-emerald-500/30 rounded-lg transition-all"
-            title="Anuncie seu produto com o administrador"
-          >
-            <MessageCircle className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Anunciar</span>
-          </a>
+          {cleanPhone ? (
+            <a
+              href={adUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-emerald-300 bg-emerald-950/40 hover:bg-emerald-900/50 border border-emerald-500/30 rounded-lg transition-all"
+              title="Anuncie seu produto com o administrador"
+            >
+              <MessageCircle className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Anunciar</span>
+            </a>
+          ) : (
+            <button
+              type="button"
+              onClick={onOpenAdmin}
+              className="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-400 bg-slate-900/60 hover:bg-slate-800 border border-slate-700/60 rounded-lg transition-all"
+              title="Configure seu WhatsApp na Administração para ativar o botão Anunciar"
+            >
+              <MessageCircle className="w-3.5 h-3.5 text-slate-400" />
+              <span>Anunciar</span>
+            </button>
+          )}
 
           {/* Desbloquear com chave button */}
           <button

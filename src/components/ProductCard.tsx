@@ -98,15 +98,22 @@ export const ProductCard: React.FC<ProductCardProps> = ({
           </div>
 
           {/* WhatsApp Buy Button */}
-          <a
-            href={whatsAppBuyUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs sm:text-sm rounded-xl transition-all shadow-md shadow-emerald-950/40 flex items-center justify-center gap-2 group-hover:shadow-emerald-900/30"
-          >
-            <MessageCircle className="w-4 h-4 fill-white text-emerald-600" />
-            <span>Comprar Agora no WhatsApp</span>
-          </a>
+          {settings.whatsappNumber.replace(/\D/g, '') ? (
+            <a
+              href={whatsAppBuyUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs sm:text-sm rounded-xl transition-all shadow-md shadow-emerald-950/40 flex items-center justify-center gap-2 group-hover:shadow-emerald-900/30"
+            >
+              <MessageCircle className="w-4 h-4 fill-white text-emerald-600" />
+              <span>Comprar Agora no WhatsApp</span>
+            </a>
+          ) : (
+            <div className="w-full py-3 px-4 bg-slate-800/80 text-slate-400 font-semibold text-xs rounded-xl border border-slate-700/60 flex items-center justify-center gap-2">
+              <MessageCircle className="w-4 h-4" />
+              <span>WhatsApp não configurado no Admin</span>
+            </div>
+          )}
 
           {/* Unlock with key link */}
           <button

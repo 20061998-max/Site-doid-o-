@@ -1,23 +1,110 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
+
+    // Bloqueio padrão para qualquer outra coleção não listada
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Funções auxiliares de validação
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidProduct(data) {
+      return data.keys().hasAll([
+          'id', 'name', 'category', 'categoryLabel', 'format', 'fileSize',
+          'shortDescription', 'fullDescription', 'originalPrice', 'promoPrice',
+          'badge', 'image', 'secretDownloadUrl', 'active', 'downloadsCount', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'name', 'category', 'categoryLabel', 'format', 'fileSize',
+          'shortDescription', 'fullDescription', 'originalPrice', 'promoPrice',
+          'badge', 'image', 'secretDownloadUrl', 'secretInstructions', 'demoUrl',
+          'active', 'featured', 'downloadsCount', 'createdAt'
+        ])
+        && data.id is string && data.id.size() >= 1 && data.id.size() <= 128
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 200
+        && data.category in ['livros', 'apps', 'sites', 'scripts', 'outros']
+        && data.categoryLabel is string && data.categoryLabel.size() <= 80
+        && data.format is string && data.format.size() <= 200
+        && data.fileSize is string && data.fileSize.size() <= 80
+        && data.shortDescription is string && data.shortDescription.size() <= 1000
+        && data.fullDescription is string && data.fullDescription.size() <= 10000
+        && data.originalPrice is number && data.originalPrice >= 0
+        && data.promoPrice is number && data.promoPrice >= 0
+        && data.badge is string && data.badge.size() <= 80
+        && data.image is string && data.image.size() <= 1000000
+        && data.secretDownloadUrl is string && data.secretDownloadUrl.size() >= 1 && data.secretDownloadUrl.size() <= 2000
+        && (!('secretInstructions' in data) || (data.secretInstructions is string && data.secretInstructions.size() <= 5000))
+        && (!('demoUrl' in data) || (data.demoUrl is string && data.demoUrl.size() <= 2000))
+        && data.active is bool
+        && (!('featured' in data) || data.featured is bool)
+        && data.downloadsCount is number && data.downloadsCount >= 0
+        && data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
+    function isValidDownloadKey(data) {
+      return data.keys().hasAll([
+          'id', 'key', 'productId', 'productName', 'customerNote',
+          'status', 'createdAt', 'downloadCount', 'maxUses'
+        ])
+        && data.keys().hasOnly([
+          'id', 'key', 'productId', 'productName', 'customerNote',
+          'status', 'createdAt', 'usedAt', 'downloadCount', 'maxUses'
+        ])
+        && data.id is string && data.id.size() >= 1 && data.id.size() <= 128
+        && data.key is string && data.key.size() >= 3 && data.key.size() <= 64
+        && data.productId is string && data.productId.size() >= 1 && data.productId.size() <= 128
+        && data.productName is string && data.productName.size() <= 250
+        && data.customerNote is string && data.customerNote.size() <= 300
+        && data.status in ['active', 'used', 'revoked']
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && (!('usedAt' in data) || (data.usedAt is string && data.usedAt.size() <= 64))
+        && data.downloadCount is number && data.downloadCount >= 0
+        && data.maxUses is number && data.maxUses >= 1 && data.maxUses <= 1000;
+    }
+
+    function isValidSettings(data) {
+      return data.keys().hasAll([
+          'whatsappNumber', 'whatsappFormatted', 'pixKey',
+          'sellerName', 'siteNotice', 'adNotice'
+        ])
+        && data.keys().hasOnly([
+          'whatsappNumber', 'whatsappFormatted', 'pixKey',
+          'sellerName', 'siteNotice', 'adNotice'
+        ])
+        && data.whatsappNumber is string && data.whatsappNumber.size() <= 30
+        && data.whatsappFormatted is string && data.whatsappFormatted.size() <= 40
+        && data.pixKey is string && data.pixKey.size() <= 200
+        && data.sellerName is string && data.sellerName.size() <= 120
+        && data.siteNotice is string && data.siteNotice.size() <= 300
+        && data.adNotice is string && data.adNotice.size() <= 1000;
+    }
+
     // Produtos do catálogo
     match /products/{productId} {
       allow read: if true;
-      allow write: if true;
+      allow create, update: if isValidId(productId) && isValidProduct(incoming());
+      allow delete: if isValidId(productId);
     }
-    
+
     // Chaves de download para desbloqueio
     match /download_keys/{keyId} {
       allow read: if true;
-      allow write: if true;
+      allow create, update: if isValidId(keyId) && isValidDownloadKey(incoming());
+      allow delete: if isValidId(keyId);
     }
-    
-    // Configurações do app e WhatsApp
-    match /settings/{document=**} {
+
+    // Configurações do site e WhatsApp (documento único settings/app)
+    match /settings/app {
       allow read: if true;
-      allow write: if true;
+      allow create, update: if isValidSettings(incoming());
     }
   }
 }

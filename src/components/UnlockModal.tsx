@@ -1,7 +1,18 @@
 import React, { useState } from 'react';
-import { X, Key, Download, CheckCircle2, AlertCircle, MessageCircle, Copy, Check, ExternalLink, ShieldCheck } from 'lucide-react';
+import {
+  X,
+  Key,
+  Download,
+  CheckCircle2,
+  AlertCircle,
+  MessageCircle,
+  Copy,
+  Check,
+  ExternalLink,
+  Loader2,
+} from 'lucide-react';
 import { Product, DownloadKey, AppSettings } from '../types';
-import { validateKey, recordKeyDownload } from '../utils/storage';
+import { validateKeyInFirestore, recordKeyDownloadInFirestore } from '../services/firebase';
 
 interface UnlockModalProps {
   isOpen: boolean;
@@ -13,10 +24,10 @@ interface UnlockModalProps {
 export const UnlockModal: React.FC<UnlockModalProps> = ({
   isOpen,
   onClose,
-  preSelectedProductId,
   settings,
 }) => {
   const [keyInput, setKeyInput] = useState('');
+  const [isValidating, setIsValidating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [unlockedData, setUnlockedData] = useState<{
     product: Product;
@@ -26,20 +37,27 @@ export const UnlockModal: React.FC<UnlockModalProps> = ({
 
   if (!isOpen) return null;
 
-  const handleValidate = (e: React.FormEvent) => {
+  const handleValidate = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setIsValidating(true);
 
-    const result = validateKey(keyInput);
-    if (result.success && result.product && result.downloadKey) {
-      setUnlockedData({
-        product: result.product,
-        downloadKey: result.downloadKey,
-      });
-      // Register the download
-      recordKeyDownload(result.downloadKey.id);
-    } else {
-      setError(result.message);
+    try {
+      const result = await validateKeyInFirestore(keyInput);
+      if (result.success && result.product && result.downloadKey) {
+        setUnlockedData({
+          product: result.product,
+          downloadKey: result.downloadKey,
+        });
+        // Register the download in Firestore
+        await recordKeyDownloadInFirestore(result.downloadKey);
+      } else {
+        setError(result.message);
+      }
+    } catch {
+      setError('Erro de conexão ao verificar a chave no servidor. Tente novamente.');
+    } finally {
+      setIsValidating(false);
     }
   };
 
@@ -55,12 +73,16 @@ export const UnlockModal: React.FC<UnlockModalProps> = ({
     setKeyInput('');
     setError(null);
     setUnlockedData(null);
+    setIsValidating(false);
     onClose();
   };
 
-  const supportWhatsAppUrl = `https://wa.me/${settings.whatsappNumber.replace(/\D/g, '')}?text=${encodeURIComponent(
-    `Olá! Estou com dúvidas ou preciso de suporte para validar minha chave de download no Doidão Downloads.`
-  )}`;
+  const cleanPhone = settings.whatsappNumber.replace(/\D/g, '');
+  const supportWhatsAppUrl = cleanPhone
+    ? `https://wa.me/${cleanPhone}?text=${encodeURIComponent(
+        `Olá! Estou com dúvidas ou preciso de suporte para validar minha chave de download no Doidão Downloads.`
+      )}`
+    : null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm animate-in fade-in duration-200">
@@ -118,15 +140,17 @@ export const UnlockModal: React.FC<UnlockModalProps> = ({
                   <AlertCircle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
                   <div className="flex-1">
                     <p className="font-medium">{error}</p>
-                    <a
-                      href={supportWhatsAppUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="mt-1.5 inline-flex items-center gap-1 text-emerald-400 hover:underline font-bold"
-                    >
-                      <MessageCircle className="w-3 h-3" />
-                      <span>Falar com o vendedor no WhatsApp</span>
-                    </a>
+                    {supportWhatsAppUrl && (
+                      <a
+                        href={supportWhatsAppUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-1.5 inline-flex items-center gap-1 text-emerald-400 hover:underline font-bold"
+                      >
+                        <MessageCircle className="w-3 h-3" />
+                        <span>Falar com o vendedor no WhatsApp</span>
+                      </a>
+                    )}
                   </div>
                 </div>
               )}
@@ -135,18 +159,6 @@ export const UnlockModal: React.FC<UnlockModalProps> = ({
                 <p className="text-slate-300 font-medium">Como funciona?</p>
                 <p>1. Ao comprar via WhatsApp e enviar o comprovante Pix, o vendedor gera sua chave de autorização.</p>
                 <p>2. Você digita ou cola a chave neste campo para desbloquear os arquivos imediatamente.</p>
-              </div>
-
-              {/* Sample test key quick pill */}
-              <div className="pt-1 flex items-center justify-between text-[11px] text-slate-500">
-                <span>Dica para testes rápidos:</span>
-                <button
-                  type="button"
-                  onClick={() => setKeyInput('DOIDAO-MINHA-OBRA-2026')}
-                  className="text-amber-400 hover:underline font-mono"
-                >
-                  Usar chave teste "MINHA OBRA"
-                </button>
               </div>
 
               <div className="pt-2 flex items-center gap-3">
@@ -159,10 +171,17 @@ export const UnlockModal: React.FC<UnlockModalProps> = ({
                 </button>
                 <button
                   type="submit"
-                  disabled={!keyInput.trim()}
-                  className="flex-1 py-2.5 text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl transition-all shadow-md shadow-amber-900/20"
+                  disabled={!keyInput.trim() || isValidating}
+                  className="flex-1 py-2.5 text-xs font-bold text-slate-950 bg-amber-400 hover:bg-amber-300 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl transition-all shadow-md shadow-amber-900/20 flex items-center justify-center gap-2"
                 >
-                  Validar e Desbloquear
+                  {isValidating ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Verificando...</span>
+                    </>
+                  ) : (
+                    <span>Validar e Desbloquear</span>
+                  )}
                 </button>
               </div>
             </form>
